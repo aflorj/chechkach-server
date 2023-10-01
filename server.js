@@ -5,6 +5,7 @@ import bodyParser from 'body-parser';
 import { Server } from 'socket.io';
 import redis from 'redis';
 import { Repository, Schema } from 'redis-om';
+import words from './words.json' assert { type: 'json' };
 
 const lobbySchema = new Schema('lobby', {
   name: { type: 'string' },
@@ -91,7 +92,8 @@ socketIO.on('connection', (socket) => {
               playerId: userName,
               socketId: socket?.id,
               connected: true,
-              ready: false,
+              isOwner: lobbyToJoin?.players?.length === 0 ? true : false, // become lobby owner if you are joing an empty lobby
+              // ready: false, CHANGE: we don't track players status anymore
             },
           ];
 
@@ -164,12 +166,56 @@ socketIO.on('connection', (socket) => {
     }
   );
 
-  socket.on('ready_change', ({ userName, lobbyName, isReady }) => {
-    console.log(
-      `User ${userName} in lobbby ${lobbyName} changed status to ${isReady}`
-    );
+  // CHANGE: We don't track player's status anymore
+  // socket.on('ready_change', ({ userName, lobbyName, isReady }) => {
+  //   console.log(
+  //     `User ${userName} in lobbby ${lobbyName} changed status to ${isReady}`
+  //   );
 
-    // spememba ready statusa in prenos tega sporocila na lobby
+  //   // spememba ready statusa in prenos tega sporocila na lobby
+  //   lobbyRepository
+  //     .search()
+  //     .where('name')
+  //     .equals(lobbyName)
+  //     .returnFirst()
+  //     .then((ourLobby) => {
+  //       console.log('ulres: ', ourLobby);
+  //       // find index of our player in the lobby
+  //       let tempLobby = ourLobby;
+  //       let playerIndex = tempLobby?.players?.findIndex(
+  //         (player) => player?.playerId === userName
+  //       );
+  //       tempLobby.players[playerIndex].ready = isReady;
+
+  //       // check if this ready change puts all (both) players into 'ready' state and start the game
+  //       if (
+  //         isReady &&
+  //         tempLobby?.players?.filter((player) => player?.ready)?.length === 2
+  //       ) {
+  //         // TODO not hardcoded but based on lobbysize
+  //         tempLobby.status = 'playing';
+  //       }
+
+  //       lobbyRepository
+  //         .save(tempLobby)
+  //         .then((saveres) => {
+  //           console.log('save res: ', saveres);
+
+  //           // emit new lobby state as a 'lobbyUpdate' to all players in the lobby
+  //           socketIO.to(lobbyName).emit('lobbyUpdate', {
+  //             newLobbyState: saveres,
+  //           });
+  //         })
+  //         .catch((saverr) => {
+  //           console.log('save err: ', saverr);
+  //         });
+  //     })
+  //     .catch((err) => {
+  //       console.log('elerr: ', err);
+  //     });
+  // });
+
+  socket.on('startGame', ({ userName, lobbyName }) => {
     lobbyRepository
       .search()
       .where('name')
@@ -182,15 +228,14 @@ socketIO.on('connection', (socket) => {
         let playerIndex = tempLobby?.players?.findIndex(
           (player) => player?.playerId === userName
         );
-        tempLobby.players[playerIndex].ready = isReady;
 
-        // check if this ready change puts all (both) players into 'ready' state and start the game
-        if (
-          isReady &&
-          tempLobby?.players?.filter((player) => player?.ready)?.length === 2
-        ) {
-          // TODO not hardcoded but based on lobbysize
+        // check if the player even has the permission to strat the game (isOwner === true)
+        if (tempLobby.players[playerIndex].isOwner) {
+          // they are the owner - start
           tempLobby.status = 'playing';
+          console.log('the owner of the lobby started the game');
+        } else {
+          // no permission to start the game
         }
 
         lobbyRepository
@@ -213,6 +258,9 @@ socketIO.on('connection', (socket) => {
   });
 
   socket.on('draw', ({ newLine, lobbyName }) => {
+    // update redis?
+    // TODO
+
     // emit new paths as a 'newLine' to all players in the lobby
     socket.to(lobbyName).emit('newLine', {
       newLine: newLine,
