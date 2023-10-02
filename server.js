@@ -7,13 +7,27 @@ import redis from 'redis';
 import { Repository, Schema } from 'redis-om';
 import words from './words.json' assert { type: 'json' };
 
+const selectNRandomWords = (n) => {
+  const selectedIndexes = new Set();
+  const result = [];
+
+  while (selectedIndexes.size < n) {
+    const randomIndex = Math.floor(Math.random() * words.length);
+    if (!selectedIndexes.has(randomIndex)) {
+      selectedIndexes.add(randomIndex);
+      result.push(words[randomIndex]);
+    }
+  }
+
+  console.log('user can choose to draw one of these: ', ...result);
+  return result;
+};
+
 const lobbySchema = new Schema('lobby', {
   name: { type: 'string' },
   status: { type: 'string' },
   playersIds: { type: 'string[]', path: '$.players[*].playerId' },
   playersSocketIds: { type: 'string[]', path: '$.players[*].socketId' },
-  // connected: { type: 'boolean', path: '$.players[*].connected' },
-  // ready: { type: 'boolean', path: '$.players[*].ready' },
 });
 
 const app = express();
@@ -140,24 +154,6 @@ socketIO.on('connection', (socket) => {
     ({ userName, lobbyName, messageType, messageContent }) => {
       // // Broadcast the message to all sockets in the same rooms
 
-      // WTF SM TU DELAU?
-
-      // // because every client not only joins 'our' room/lobby but also automatically also joins a room with their name,
-      // // we have to remove that "self-room" to prevent double messages and only sending the messages to 'our' rooms
-      // let senderId = socket?.id;
-      // let actualRooms = [...socket?.rooms]?.filter((room) => room !== senderId);
-
-      // console.log('all rooms: ', socketIO?.sockets?.adapter?.rooms);
-      // actualRooms?.forEach((room) => {
-      //   // console.log('room: ', room);
-      //   socketIO.to(room).emit('message', {
-      //     userName: userName,
-      //     message: { type: messageType, content: messageContent },
-      //     serverMessage: false,
-      //   });
-      // });
-
-      // replaced with this simple thing:
       socketIO.to(lobbyName).emit('message', {
         userName: userName,
         message: { type: messageType, content: messageContent },
@@ -232,8 +228,16 @@ socketIO.on('connection', (socket) => {
         // check if the player even has the permission to strat the game (isOwner === true)
         if (tempLobby.players[playerIndex].isOwner) {
           // they are the owner - start
-          tempLobby.status = 'playing';
           console.log('the owner of the lobby started the game');
+
+          // starting the game
+          tempLobby.status = 'pickingWord';
+          let wordsToPickFrom = selectNRandomWords(3);
+
+          let drawerSocketId = tempLobby.players[playerIndex].socketId;
+          socketIO.to(drawerSocketId).emit('pickAWord', {
+            arrayOfWordOptions: wordsToPickFrom,
+          });
         } else {
           // no permission to start the game
         }
@@ -261,7 +265,7 @@ socketIO.on('connection', (socket) => {
     // update redis?
     // TODO
 
-    // emit new paths as a 'newLine' to all players in the lobby
+    // emit new paths as a 'newLine' to all players in the lobby except the person drawing
     socket.to(lobbyName).emit('newLine', {
       newLine: newLine,
     });
