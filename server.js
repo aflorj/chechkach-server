@@ -117,8 +117,12 @@ socketIO.on('connection', (socket) => {
               console.log('lobbyJoinResponse: ', ljRes);
 
               // emit the 'starting' lobby state as a 'lobbyUpdate' to all players in the lobby
-              socketIO.to(lobbyName).emit('lobbyUpdate', {
-                newLobbyState: ljRes,
+              // socketIO.to(lobbyName).emit('lobbyUpdate', {
+              //   newLobbyState: ljRes,
+              // });
+              // TODO DOING - replaced with more specific 'userStateChange'
+              socketIO.to(lobbyName).emit('userStateChange', {
+                newUserState: ljRes.players,
               });
             })
             .catch((err) => {
@@ -238,27 +242,37 @@ socketIO.on('connection', (socket) => {
           socketIO.to(drawerSocketId).emit('pickAWord', {
             arrayOfWordOptions: wordsToPickFrom,
           });
+
+          lobbyRepository
+            .save(tempLobby)
+            .then((saveres) => {
+              console.log('save res: ', saveres);
+
+              // emit new lobby state as a 'lobbyUpdate' to all players in the lobby
+              // TODO doing new more specific event for status update
+              // socketIO.to(lobbyName).emit('lobbyUpdate', {
+              //   newLobbyState: saveres,
+              // });
+
+              socketIO.to(lobbyName).emit('lobbyStatusChange', {
+                newStatus: 'pickingWord',
+                info: { drawingUser: userName },
+              });
+            })
+            .catch((saverr) => {
+              console.log('save err: ', saverr);
+            });
         } else {
           // no permission to start the game
         }
-
-        lobbyRepository
-          .save(tempLobby)
-          .then((saveres) => {
-            console.log('save res: ', saveres);
-
-            // emit new lobby state as a 'lobbyUpdate' to all players in the lobby
-            socketIO.to(lobbyName).emit('lobbyUpdate', {
-              newLobbyState: saveres,
-            });
-          })
-          .catch((saverr) => {
-            console.log('save err: ', saverr);
-          });
       })
       .catch((err) => {
         console.log('elerr: ', err);
       });
+  });
+
+  socket.on('wordPick', ({ pickedWord, lobbyName }) => {
+    console.log('picked word was: ', pickedWord);
   });
 
   socket.on('draw', ({ newLine, lobbyName }) => {
@@ -297,8 +311,9 @@ socketIO.on('connection', (socket) => {
               console.log('save on disconnect response: ', dcsr);
 
               // emit the new lobby state as a 'lobbyUpdate' to all players in the lobby
-              socketIO.to(r?.name).emit('lobbyUpdate', {
-                newLobbyState: dcsr,
+              // TODO DOING - replaced with more specific 'userStateChange'
+              socketIO.to(r?.name).emit('userStateChange', {
+                newUserState: dcsr.players,
               });
             })
             .catch((dcserr) => {
