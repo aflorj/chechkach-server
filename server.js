@@ -273,6 +273,18 @@ socketIO.on('connection', (socket) => {
 
   socket.on('wordPick', ({ pickedWord, lobbyName }) => {
     console.log('picked word was: ', pickedWord);
+
+    // ackn the choice
+    socketIO.to(socket.id).emit('startDrawing', { wordToDraw: pickedWord });
+
+    // redis game state
+    // TODO
+
+    // notify the players
+    socketIO.to(lobbyName).emit('lobbyStatusChange', {
+      newStatus: 'playing',
+      info: { maskedWord: 'pickedwordbutmasked', drawingUser: 'test' }, // TODO mask the word for normies
+    });
   });
 
   socket.on('draw', ({ newLine, lobbyName }) => {
