@@ -272,7 +272,7 @@ socketIO.on('connection', (socket) => {
   });
 
   socket.on('wordPick', ({ pickedWord, lobbyName }) => {
-    console.log('picked word was: ', pickedWord);
+    // console.log('picked word was: ', pickedWord);
 
     // ackn the choice
     socketIO.to(socket.id).emit('startDrawing', { wordToDraw: pickedWord });
@@ -280,10 +280,12 @@ socketIO.on('connection', (socket) => {
     // redis game state
     // TODO
 
-    // notify the players
+    // notify the players but send the masked version of the word
+    let maskedWord = pickedWord?.replace(/\S/g, '_');
+
     socketIO.to(lobbyName).emit('lobbyStatusChange', {
       newStatus: 'playing',
-      info: { maskedWord: 'pickedwordbutmasked', drawingUser: 'test' }, // TODO mask the word for normies
+      info: { maskedWord: maskedWord, drawingUser: 'test' },
     });
   });
 
