@@ -156,7 +156,49 @@ socketIO.on('connection', (socket) => {
   socket.on(
     'message',
     ({ userName, lobbyName, messageType, messageContent }) => {
-      // // Broadcast the message to all sockets in the same rooms
+      // the types of messages that we should handle:
+      // 1. drawer - just broadcast the message to the lobby
+      // 2. player who is still guessing - check if correct, close call or normal message
+
+      lobbyRepository
+        .search()
+        .where('name')
+        .equals(lobbyName)
+        .returnFirst()
+        .then((ourLobby) => {
+          console.log('our lobby on message res: ', ourLobby);
+
+          let tempLobby = ourLobby;
+
+          // if the lobby's status is 'playing' we are considering this a guess and will compare it to the 'wordToGuess'
+          if (ourLobby.status === 'playing') {
+            let wordToGuess = ourLobby.wordToGuess;
+            if (messageContent?.trim() === wordToGuess) {
+              // correct guess
+            } else {
+              // TODO check for close guesses
+            }
+          }
+
+          // lobbyRepository
+          //   .save(tempLobby)
+          //   .then((saveres) => {
+          //     console.log('save res: ', saveres);
+
+          //     socketIO.to(lobbyName).emit('lobbyStatusChange', {
+          //       newStatus: 'pickingWord',
+          //       info: { drawingUser: userName },
+          //     });
+          //   })
+          //   .catch((saverr) => {
+          //     console.log('save err: ', saverr);
+          //   });
+        })
+        .catch((err) => {
+          console.log('elerr: ', err);
+        });
+
+      // The message did not fall into any of the special categories so it's a normal message that should be broadcasted to the lobby
 
       socketIO.to(lobbyName).emit('message', {
         userName: userName,
@@ -165,55 +207,6 @@ socketIO.on('connection', (socket) => {
       });
     }
   );
-
-  // CHANGE: We don't track player's status anymore
-  // socket.on('ready_change', ({ userName, lobbyName, isReady }) => {
-  //   console.log(
-  //     `User ${userName} in lobbby ${lobbyName} changed status to ${isReady}`
-  //   );
-
-  //   // spememba ready statusa in prenos tega sporocila na lobby
-  //   lobbyRepository
-  //     .search()
-  //     .where('name')
-  //     .equals(lobbyName)
-  //     .returnFirst()
-  //     .then((ourLobby) => {
-  //       console.log('ulres: ', ourLobby);
-  //       // find index of our player in the lobby
-  //       let tempLobby = ourLobby;
-  //       let playerIndex = tempLobby?.players?.findIndex(
-  //         (player) => player?.playerId === userName
-  //       );
-  //       tempLobby.players[playerIndex].ready = isReady;
-
-  //       // check if this ready change puts all (both) players into 'ready' state and start the game
-  //       if (
-  //         isReady &&
-  //         tempLobby?.players?.filter((player) => player?.ready)?.length === 2
-  //       ) {
-  //         // TODO not hardcoded but based on lobbysize
-  //         tempLobby.status = 'playing';
-  //       }
-
-  //       lobbyRepository
-  //         .save(tempLobby)
-  //         .then((saveres) => {
-  //           console.log('save res: ', saveres);
-
-  //           // emit new lobby state as a 'lobbyUpdate' to all players in the lobby
-  //           socketIO.to(lobbyName).emit('lobbyUpdate', {
-  //             newLobbyState: saveres,
-  //           });
-  //         })
-  //         .catch((saverr) => {
-  //           console.log('save err: ', saverr);
-  //         });
-  //     })
-  //     .catch((err) => {
-  //       console.log('elerr: ', err);
-  //     });
-  // });
 
   socket.on('startGame', ({ userName, lobbyName }) => {
     lobbyRepository
@@ -229,13 +222,19 @@ socketIO.on('connection', (socket) => {
           (player) => player?.playerId === userName
         );
 
-        // check if the player even has the permission to strat the game (isOwner === true)
+        // check if the player even has the permission to start the game (isOwner === true)
         if (tempLobby.players[playerIndex].isOwner) {
           // they are the owner - start
           console.log('the owner of the lobby started the game');
 
           // starting the game
           tempLobby.status = 'pickingWord';
+          tempLobby.gameState = {
+            roundNo: 1,
+            drawState: [],
+            wordToGuess: null,
+            scoreBoard: [],
+          };
           let wordsToPickFrom = selectNRandomWords(3);
 
           let drawerSocketId = tempLobby.players[playerIndex].socketId;
@@ -278,7 +277,32 @@ socketIO.on('connection', (socket) => {
     socketIO.to(socket.id).emit('startDrawing', { wordToDraw: pickedWord });
 
     // redis game state
-    // TODO
+
+    lobbyRepository
+      .search()
+      .where('name')
+      .equals(lobbyName)
+      .returnFirst()
+      .then((ourLobby) => {
+        console.log('ulres: ', ourLobby);
+        // find index of our player in the lobby
+        let tempLobby = ourLobby;
+
+        tempLobby.status = 'playing';
+        tempLobby.gameState.wordToGuess = pickedWord;
+
+        lobbyRepository
+          .save(tempLobby)
+          .then((saveres) => {
+            console.log('save res: ', saveres);
+          })
+          .catch((saverr) => {
+            console.log('save err: ', saverr);
+          });
+      })
+      .catch((err) => {
+        console.log('elerr: ', err);
+      });
 
     // notify the players but send the masked version of the word
     let maskedWord = pickedWord?.replace(/\S/g, '_');
