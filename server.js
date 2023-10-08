@@ -23,6 +23,11 @@ const selectNRandomWords = (n) => {
   return result;
 };
 
+const checkForCloseGuess = (guess, toGuess) => {
+  console.log(`checking proximity for ${guess} and ${toGuess}`);
+  // TODO comparison logic
+};
+
 const lobbySchema = new Schema('lobby', {
   name: { type: 'string' },
   status: { type: 'string' },
@@ -170,41 +175,62 @@ socketIO.on('connection', (socket) => {
 
           let tempLobby = ourLobby;
 
-          // if the lobby's status is 'playing' we are considering this a guess and will compare it to the 'wordToGuess'
-          if (ourLobby.status === 'playing') {
-            let wordToGuess = ourLobby.wordToGuess;
-            if (messageContent?.trim() === wordToGuess) {
-              // correct guess
-            } else {
-              // TODO check for close guesses
+          // check that the message is not coming from the person drawing
+          if (tempLobby.gameState.drawingUser !== userName) {
+            // if the lobby's status is 'playing' we are considering this a guess and will compare it to the 'wordToGuess'
+            if (tempLobby.status === 'playing') {
+              // check if the player is one of the winners and instead of checking for correct guess broadcast the message to other round winners
+
+              if (tempLobby.gameState.roundWinners.includes(userName)) {
+                // TODO broadcast winners message
+                console.log('winners message');
+                return;
+              } else {
+                console.log('checking for correct guess');
+                let wordToGuess = ourLobby.gameState.wordToGuess;
+                let guess = messageContent?.trim()?.toLowerCase();
+                if (guess === wordToGuess) {
+                  // correct guess
+                  console.log('correct guess!');
+
+                  // don't broadcast the correct guess - broadcast the correct guess server alert
+
+                  // add the player to the winners array
+                  tempLobby.gameState.roundWinners.push(userName);
+
+                  lobbyRepository
+                    .save(tempLobby)
+                    .then((winnerSaveRes) => {
+                      console.log('winnersaveres: ', winnerSaveRes);
+                    })
+                    .catch((err) => {
+                      console.log('lobbyJoin error: ', err);
+                    });
+
+                  // check how we handle this on the client
+                  socketIO.to(lobbyName).emit('message', {
+                    message: { type: 'correctGuess', content: userName },
+                    serverMessage: true,
+                  });
+
+                  return;
+                } else if (checkForCloseGuess(guess, wordToGuess)) {
+                  // TODO broadcast the 'close guess' message to the user only + broadcast as a normal message to all the users (so no return here)
+                }
+              }
             }
           }
 
-          // lobbyRepository
-          //   .save(tempLobby)
-          //   .then((saveres) => {
-          //     console.log('save res: ', saveres);
-
-          //     socketIO.to(lobbyName).emit('lobbyStatusChange', {
-          //       newStatus: 'pickingWord',
-          //       info: { drawingUser: userName },
-          //     });
-          //   })
-          //   .catch((saverr) => {
-          //     console.log('save err: ', saverr);
-          //   });
+          // The message did not fall into any of the special categories so it's a normal message that should be broadcasted to the lobby
+          socketIO.to(lobbyName).emit('message', {
+            userName: userName,
+            message: { type: messageType, content: messageContent },
+            serverMessage: false,
+          });
         })
         .catch((err) => {
           console.log('elerr: ', err);
         });
-
-      // The message did not fall into any of the special categories so it's a normal message that should be broadcasted to the lobby
-
-      socketIO.to(lobbyName).emit('message', {
-        userName: userName,
-        message: { type: messageType, content: messageContent },
-        serverMessage: false,
-      });
     }
   );
 
@@ -231,9 +257,11 @@ socketIO.on('connection', (socket) => {
           tempLobby.status = 'pickingWord';
           tempLobby.gameState = {
             roundNo: 1,
+            drawingUser: userName,
             drawState: [],
             wordToGuess: null,
             scoreBoard: [],
+            roundWinners: [],
           };
           let wordsToPickFrom = selectNRandomWords(3);
 
