@@ -181,9 +181,23 @@ socketIO.on('connection', (socket) => {
             if (tempLobby.status === 'playing') {
               // check if the player is one of the winners and instead of checking for correct guess broadcast the message to other round winners
 
-              if (tempLobby.gameState.roundWinners.includes(userName)) {
-                // TODO broadcast winners message
+              if (
+                tempLobby?.gameState?.roundWinners?.filter(
+                  (winner) => winner?.userName === userName
+                )?.length > 0
+              ) {
                 console.log('winners message');
+                tempLobby.gameState.roundWinners.forEach((winner) => {
+                  socketIO.to(winner.socketId)?.emit('message', {
+                    message: {
+                      type: 'winnersOnly',
+                      content: messageContent,
+                      userName: userName,
+                    },
+                    serverMessage: false,
+                  });
+                });
+
                 return;
               } else {
                 console.log('checking for correct guess');
@@ -193,10 +207,13 @@ socketIO.on('connection', (socket) => {
                   // correct guess
                   console.log('correct guess!');
 
-                  // don't broadcast the correct guess - broadcast the correct guess server alert
+                  // don't broadcast the correct guess - broadcast the correct guess server alert instead
 
                   // add the player to the winners array
-                  tempLobby.gameState.roundWinners.push(userName);
+                  tempLobby.gameState.roundWinners.push({
+                    userName: userName,
+                    socketId: socket.id,
+                  });
 
                   lobbyRepository
                     .save(tempLobby)
@@ -216,6 +233,10 @@ socketIO.on('connection', (socket) => {
                   return;
                 } else if (checkForCloseGuess(guess, wordToGuess)) {
                   // TODO broadcast the 'close guess' message to the user only + broadcast as a normal message to all the users (so no return here)
+                  socketIO.to(socket?.id)?.emit('message', {
+                    message: { type: 'closeGuess' },
+                    serverMessage: true,
+                  });
                 }
               }
             }
