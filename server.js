@@ -5,23 +5,37 @@ import bodyParser from 'body-parser';
 import { Server } from 'socket.io';
 import redis from 'redis';
 import { Repository, Schema } from 'redis-om';
-import words from './words.json' assert { type: 'json' };
+import { promises as fs } from 'fs';
 
-const selectNRandomWords = (n) => {
-  const selectedIndexes = new Set();
-  const result = [];
+// Array of words
+let words = [];
 
-  while (selectedIndexes.size < n) {
-    const randomIndex = Math.floor(Math.random() * words.length);
-    if (!selectedIndexes.has(randomIndex)) {
-      selectedIndexes.add(randomIndex);
-      result.push(words[randomIndex]);
-    }
+// Read the file with words
+fs.readFile('slovene.txt', 'utf8')
+  .then((data) => {
+    words = data
+      .split('\n')
+      .map((word) => word.trim())
+      .filter((word) => word !== '');
+  })
+  .catch((err) => {
+    console.error(err);
+    return;
+  });
+
+// Function to select random words from the array
+function getRandomWords(count) {
+  const randomWords = [];
+  const arrayCopy = [...words];
+
+  for (let i = 0; i < count; i++) {
+    const randomIndex = Math.floor(Math.random() * arrayCopy.length);
+    const randomWord = arrayCopy.splice(randomIndex, 1)[0];
+    randomWords.push(randomWord);
   }
 
-  console.log('user can choose to draw one of these: ', ...result);
-  return result;
-};
+  return randomWords;
+}
 
 const checkForCloseGuess = (guess, toGuess) => {
   console.log(`checking proximity for ${guess} and ${toGuess}`);
@@ -179,23 +193,36 @@ socketIO.on('connection', (socket) => {
           if (tempLobby.gameState.drawingUser !== userName) {
             // if the lobby's status is 'playing' we are considering this a guess and will compare it to the 'wordToGuess'
             if (tempLobby.status === 'playing') {
-              // check if the player is one of the winners and instead of checking for correct guess broadcast the message to other round winners
-
               if (
                 tempLobby?.gameState?.roundWinners?.filter(
                   (winner) => winner?.userName === userName
                 )?.length > 0
               ) {
-                console.log('winners message');
+                // the player is one of the winners -> broadcast the message to other round winners
                 tempLobby.gameState.roundWinners.forEach((winner) => {
                   socketIO.to(winner.socketId)?.emit('message', {
                     message: {
                       type: 'winnersOnly',
                       content: messageContent,
-                      userName: userName,
                     },
+                    userName: userName,
                     serverMessage: false,
                   });
+                });
+
+                // and the person drawing
+                let personDrawingSocketId = tempLobby.players.filter(
+                  (player) =>
+                    player.playerId === tempLobby.gameState.drawingUser
+                )[0].socketId;
+
+                socketIO.to(personDrawingSocketId)?.emit('message', {
+                  message: {
+                    type: 'winnersOnly',
+                    content: messageContent,
+                  },
+                  userName: userName,
+                  serverMessage: false,
                 });
 
                 return;
@@ -284,7 +311,7 @@ socketIO.on('connection', (socket) => {
             scoreBoard: [],
             roundWinners: [],
           };
-          let wordsToPickFrom = selectNRandomWords(3);
+          let wordsToPickFrom = getRandomWords(3);
 
           let drawerSocketId = tempLobby.players[playerIndex].socketId;
           socketIO.to(drawerSocketId).emit('pickAWord', {
@@ -319,7 +346,7 @@ socketIO.on('connection', (socket) => {
       });
   });
 
-  socket.on('wordPick', ({ pickedWord, lobbyName }) => {
+  socket.on('wordPick', ({ pickedWord, lobbyName, userName }) => {
     // console.log('picked word was: ', pickedWord);
 
     // ackn the choice
@@ -358,7 +385,7 @@ socketIO.on('connection', (socket) => {
 
     socketIO.to(lobbyName).emit('lobbyStatusChange', {
       newStatus: 'playing',
-      info: { maskedWord: maskedWord, drawingUser: 'test' },
+      info: { maskedWord: maskedWord, drawingUser: userName },
     });
   });
 
