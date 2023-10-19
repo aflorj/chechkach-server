@@ -251,12 +251,16 @@ socketIO.on('connection', (socket) => {
                       console.log('lobbyJoin error: ', err);
                     });
 
-                  // check how we handle this on the client
+                  // emit the correctGuess  message to the whole lobby
                   socketIO.to(lobbyName).emit('message', {
                     message: { type: 'correctGuess', content: userName },
                     serverMessage: true,
                   });
 
+                  // emit unmaskedWord to the person correctly guessing
+                  socketIO.to(socket.id).emit('unmaskedWord', {
+                    unmaskedWord: wordToGuess,
+                  });
                   return;
                 } else if (checkForCloseGuess(guess, wordToGuess)) {
                   // TODO broadcast the 'close guess' message to the user only + broadcast as a normal message to all the users (so no return here)
@@ -310,6 +314,7 @@ socketIO.on('connection', (socket) => {
             wordToGuess: null,
             scoreBoard: [],
             roundWinners: [],
+            roundEndTimeStamp: null,
           };
           let wordsToPickFrom = getRandomWords(3);
 
@@ -347,6 +352,7 @@ socketIO.on('connection', (socket) => {
   });
 
   socket.on('wordPick', ({ pickedWord, lobbyName, userName }) => {
+    const epochNow = Math.floor(new Date().getTime() / 1000);
     // console.log('picked word was: ', pickedWord);
 
     // ackn the choice
@@ -366,6 +372,7 @@ socketIO.on('connection', (socket) => {
 
         tempLobby.status = 'playing';
         tempLobby.gameState.wordToGuess = pickedWord;
+        tempLobby.gameState.roundEndTimeStamp = epochNow + 100; // TODO hardcoded for testing
 
         lobbyRepository
           .save(tempLobby)
@@ -385,7 +392,11 @@ socketIO.on('connection', (socket) => {
 
     socketIO.to(lobbyName).emit('lobbyStatusChange', {
       newStatus: 'playing',
-      info: { maskedWord: maskedWord, drawingUser: userName },
+      info: {
+        maskedWord: maskedWord,
+        drawingUser: userName,
+        roundEndTimeStamp: epochNow + 10, // TODO hardcoded for testing
+      },
     });
   });
 
@@ -397,6 +408,33 @@ socketIO.on('connection', (socket) => {
     socket.to(lobbyName).emit('newLine', {
       newLine: newLine,
     });
+  });
+
+  socket.on('triggerRoundEndByTimer', ({ userName, lobbyName }) => {
+    lobbyRepository
+      .search()
+      .where('name')
+      .equals(lobbyName)
+      .returnFirst()
+      .then((ourLobby) => {
+        // TODO make sure the player that triggered this event is the person drawing
+
+        let tempLobby = ourLobby;
+
+        tempLobby.status = 'roundOver';
+
+        lobbyRepository
+          .save(tempLobby)
+          .then((saveres) => {
+            // TODO emit 'roundOver' and handle it on the client
+          })
+          .catch((saverr) => {
+            console.log(saverr);
+          });
+      })
+      .catch((err) => {
+        console.log(err);
+      });
   });
 
   socket.on('disconnect', () => {
