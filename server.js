@@ -242,6 +242,8 @@ socketIO.on('connection', (socket) => {
                     socketId: socket.id,
                   });
 
+                  // TODO doing - check if all the players have guessed the word and finish the round
+
                   lobbyRepository
                     .save(tempLobby)
                     .then((winnerSaveRes) => {
@@ -251,7 +253,7 @@ socketIO.on('connection', (socket) => {
                       console.log('lobbyJoin error: ', err);
                     });
 
-                  // emit the correctGuess  message to the whole lobby
+                  // emit the correctGuess message to the whole lobby
                   socketIO.to(lobbyName).emit('message', {
                     message: { type: 'correctGuess', content: userName },
                     serverMessage: true,
@@ -316,27 +318,21 @@ socketIO.on('connection', (socket) => {
             roundWinners: [],
             roundEndTimeStamp: null,
           };
-          let wordsToPickFrom = getRandomWords(3);
 
+          let wordsToPickFrom = getRandomWords(3);
           let drawerSocketId = tempLobby.players[playerIndex].socketId;
-          socketIO.to(drawerSocketId).emit('pickAWord', {
-            arrayOfWordOptions: wordsToPickFrom,
-          });
 
           lobbyRepository
             .save(tempLobby)
             .then((saveres) => {
               console.log('save res: ', saveres);
-
-              // emit new lobby state as a 'lobbyUpdate' to all players in the lobby
-              // TODO doing new more specific event for status update
-              // socketIO.to(lobbyName).emit('lobbyUpdate', {
-              //   newLobbyState: saveres,
-              // });
-
               socketIO.to(lobbyName).emit('lobbyStatusChange', {
                 newStatus: 'pickingWord',
                 info: { drawingUser: userName },
+              });
+
+              socketIO.to(drawerSocketId).emit('pickAWord', {
+                arrayOfWordOptions: wordsToPickFrom,
               });
             })
             .catch((saverr) => {
@@ -372,12 +368,22 @@ socketIO.on('connection', (socket) => {
 
         tempLobby.status = 'playing';
         tempLobby.gameState.wordToGuess = pickedWord;
-        tempLobby.gameState.roundEndTimeStamp = epochNow + 100; // TODO hardcoded for testing
+        tempLobby.gameState.roundEndTimeStamp = epochNow + 10; // TODO hardcoded for testing
 
         lobbyRepository
           .save(tempLobby)
           .then((saveres) => {
-            console.log('save res: ', saveres);
+            // notify the players but send the masked version of the word
+            let maskedWord = pickedWord?.replace(/\S/g, '_');
+
+            socketIO.to(lobbyName).emit('lobbyStatusChange', {
+              newStatus: 'playing',
+              info: {
+                maskedWord: maskedWord,
+                drawingUser: userName,
+                roundEndTimeStamp: epochNow + 10, // TODO hardcoded for testing
+              },
+            });
           })
           .catch((saverr) => {
             console.log('save err: ', saverr);
@@ -386,18 +392,6 @@ socketIO.on('connection', (socket) => {
       .catch((err) => {
         console.log('elerr: ', err);
       });
-
-    // notify the players but send the masked version of the word
-    let maskedWord = pickedWord?.replace(/\S/g, '_');
-
-    socketIO.to(lobbyName).emit('lobbyStatusChange', {
-      newStatus: 'playing',
-      info: {
-        maskedWord: maskedWord,
-        drawingUser: userName,
-        roundEndTimeStamp: epochNow + 10, // TODO hardcoded for testing
-      },
-    });
   });
 
   socket.on('draw', ({ newLine, lobbyName }) => {
@@ -417,20 +411,68 @@ socketIO.on('connection', (socket) => {
       .equals(lobbyName)
       .returnFirst()
       .then((ourLobby) => {
-        // TODO make sure the player that triggered this event is the person drawing
-
         let tempLobby = ourLobby;
 
-        tempLobby.status = 'roundOver';
+        // make sure the player that triggered this event is the person drawing
+        if (tempLobby.gameState.drawingUser === userName) {
+          // apply changes/resets to the lobby
+          tempLobby.status = 'roundOver';
+          tempLobby.gameState.drawState = [];
+          tempLobby.gameState.wordToGuess = null;
+          // TODO tempLobby.gameState.scoreBoard = ...
+          tempLobby.gameState.roundWinners = [];
+          tempLobby.gameState.roundStartTimeStamp = null;
 
-        lobbyRepository
-          .save(tempLobby)
-          .then((saveres) => {
-            // TODO emit 'roundOver' and handle it on the client
-          })
-          .catch((saverr) => {
-            console.log(saverr);
-          });
+          // determine who is drawing next
+
+          // find the index of the current drawer
+          let currentDrawerIndex = tempLobby?.players?.findIndex(
+            (player) => player?.playerId === tempLobby?.gameState?.drawingUser
+          );
+
+          let socketIdForDrawingNext = null;
+
+          if (currentDrawerIndex + 1 >= tempLobby?.players?.length) {
+            // all the players have drawn, go back to index 0 and increase the rounud number
+            tempLobby.gameState.roundNo = tempLobby.gameState.roundNo + 1;
+            tempLobby.gameState.drawingUser = tempLobby?.players?.[0]?.playerId;
+            socketIdForDrawingNext = tempLobby?.players?.[0]?.socketId;
+          } else {
+            // next player
+            tempLobby.gameState.drawingUser =
+              tempLobby?.players?.[currentDrawerIndex + 1]?.playerId;
+            socketIdForDrawingNext =
+              tempLobby?.players?.[currentDrawerIndex + 1]?.socketId;
+          }
+
+          lobbyRepository
+            .save(tempLobby)
+            .then((saveres) => {
+              socketIO.to(lobbyName).emit('lobbyStatusChange', {
+                newStatus: 'roundOver',
+                info: {
+                  drawingNext: saveres.gameState.drawingUser,
+                  // TODO doing unmasked word here ro unmasked word event? zzz
+                },
+              });
+
+              setTimeout(() => {
+                let wordsToPickFrom = getRandomWords(3);
+
+                socketIO.to(lobbyName).emit('lobbyStatusChange', {
+                  newStatus: 'pickingWord',
+                  info: { drawingUser: saveres.gameState.drawingUser },
+                });
+
+                socketIO.to(socketIdForDrawingNext).emit('pickAWord', {
+                  arrayOfWordOptions: wordsToPickFrom,
+                });
+              }, 10000);
+            })
+            .catch((saverr) => {
+              console.log(saverr);
+            });
+        }
       })
       .catch((err) => {
         console.log(err);
