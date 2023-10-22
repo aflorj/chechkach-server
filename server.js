@@ -7,6 +7,12 @@ import redis from 'redis';
 import { Repository, Schema } from 'redis-om';
 import { promises as fs } from 'fs';
 
+// TODOs:
+// - scoreboard
+// - handle disconnects/reconnects
+// - hints
+// - settings when creating a lobby (time to draw, # of rounds, hints, transfer ownership?, ...)
+
 // Array of words
 let words = [];
 
@@ -42,6 +48,7 @@ const checkForCloseGuess = (guess, toGuess) => {
   // TODO comparison logic
 };
 
+// TODO fill this up with missing properties
 const lobbySchema = new Schema('lobby', {
   name: { type: 'string' },
   status: { type: 'string' },
@@ -90,6 +97,99 @@ app.use(cors());
 app.use(bodyParser.json());
 
 const PORT = process.env.PORT || 9030;
+
+const prepareNextRound = (tempLobby) => {
+  let tempUnmaskedWord = tempLobby.gameState.wordToGuess;
+  // determine who is drawing next
+
+  // find the index of the current drawer
+  let currentDrawerIndex = tempLobby?.players?.findIndex(
+    (player) => player?.playerId === tempLobby?.gameState?.drawingUser
+  );
+
+  let socketIdForDrawingNext = null;
+
+  if (
+    currentDrawerIndex + 1 >= tempLobby?.players?.length &&
+    tempLobby?.gameState?.totalRounds === tempLobby?.gameState?.roundNo
+  ) {
+    // gameOver
+    tempLobby.status = 'roundOver';
+    tempLobby.gameState.drawState = [];
+    tempLobby.gameState.wordToGuess = null;
+    // TODO tempLobby.gameState.scoreBoard = ...
+    tempLobby.gameState.roundWinners = [];
+
+    lobbyRepository
+      .save(tempLobby)
+      .then((saveres) => {
+        socketIO.to(tempLobby.name).emit('lobbyStatusChange', {
+          newStatus: 'roundOver',
+          info: {
+            unmaskedWord: tempUnmaskedWord,
+          },
+        });
+      })
+      .catch((saverr) => {
+        console.log(saverr);
+      });
+
+    setTimeout(() => {
+      socketIO.to(tempLobby.name).emit('lobbyStatusChange', {
+        newStatus: 'gameOver',
+      });
+    }, 7500);
+  } else {
+    // apply changes/resets to the lobby
+    tempLobby.status = 'roundOver';
+    tempLobby.gameState.drawState = [];
+    tempLobby.gameState.wordToGuess = null;
+    // TODO tempLobby.gameState.scoreBoard = ...
+    tempLobby.gameState.roundWinners = [];
+
+    if (currentDrawerIndex + 1 >= tempLobby?.players?.length) {
+      // next round
+      tempLobby.gameState.roundNo = tempLobby.gameState.roundNo + 1;
+      tempLobby.gameState.drawingUser = tempLobby?.players?.[0]?.playerId;
+      socketIdForDrawingNext = tempLobby?.players?.[0]?.socketId;
+    } else {
+      // next player
+      tempLobby.gameState.drawingUser =
+        tempLobby?.players?.[currentDrawerIndex + 1]?.playerId;
+      socketIdForDrawingNext =
+        tempLobby?.players?.[currentDrawerIndex + 1]?.socketId;
+    }
+
+    // emit roundOver
+    lobbyRepository
+      .save(tempLobby)
+      .then((saveres) => {
+        socketIO.to(tempLobby.name).emit('lobbyStatusChange', {
+          newStatus: 'roundOver',
+          info: {
+            drawingNext: saveres.gameState.drawingUser,
+            unmaskedWord: tempUnmaskedWord,
+          },
+        });
+
+        setTimeout(() => {
+          let wordsToPickFrom = getRandomWords(3);
+
+          socketIO.to(tempLobby.name).emit('lobbyStatusChange', {
+            newStatus: 'pickingWord',
+            info: { drawingUser: saveres.gameState.drawingUser },
+          });
+
+          socketIO.to(socketIdForDrawingNext).emit('pickAWord', {
+            arrayOfWordOptions: wordsToPickFrom,
+          });
+        }, 10000);
+      })
+      .catch((saverr) => {
+        console.log(saverr);
+      });
+  }
+};
 
 // WebSocket server logic
 socketIO.on('connection', (socket) => {
@@ -242,12 +342,16 @@ socketIO.on('connection', (socket) => {
                     socketId: socket.id,
                   });
 
-                  // TODO doing - check if all the players have guessed the word and finish the round
-
                   lobbyRepository
                     .save(tempLobby)
                     .then((winnerSaveRes) => {
-                      console.log('winnersaveres: ', winnerSaveRes);
+                      // check if all the players have guessed the word and finish the round
+                      if (
+                        winnerSaveRes?.gameState?.roundWinners?.length ===
+                        winnerSaveRes?.players?.length - 1
+                      ) {
+                        prepareNextRound(winnerSaveRes);
+                      }
                     })
                     .catch((err) => {
                       console.log('lobbyJoin error: ', err);
@@ -310,6 +414,7 @@ socketIO.on('connection', (socket) => {
           // starting the game
           tempLobby.status = 'pickingWord';
           tempLobby.gameState = {
+            totalRounds: 3, // TODO lobby owner should be able to set the # of rounds
             roundNo: 1,
             drawingUser: userName,
             drawState: [],
@@ -415,63 +520,7 @@ socketIO.on('connection', (socket) => {
 
         // make sure the player that triggered this event is the person drawing
         if (tempLobby.gameState.drawingUser === userName) {
-          // apply changes/resets to the lobby
-          tempLobby.status = 'roundOver';
-          tempLobby.gameState.drawState = [];
-          tempLobby.gameState.wordToGuess = null;
-          // TODO tempLobby.gameState.scoreBoard = ...
-          tempLobby.gameState.roundWinners = [];
-          tempLobby.gameState.roundStartTimeStamp = null;
-
-          // determine who is drawing next
-
-          // find the index of the current drawer
-          let currentDrawerIndex = tempLobby?.players?.findIndex(
-            (player) => player?.playerId === tempLobby?.gameState?.drawingUser
-          );
-
-          let socketIdForDrawingNext = null;
-
-          if (currentDrawerIndex + 1 >= tempLobby?.players?.length) {
-            // all the players have drawn, go back to index 0 and increase the rounud number
-            tempLobby.gameState.roundNo = tempLobby.gameState.roundNo + 1;
-            tempLobby.gameState.drawingUser = tempLobby?.players?.[0]?.playerId;
-            socketIdForDrawingNext = tempLobby?.players?.[0]?.socketId;
-          } else {
-            // next player
-            tempLobby.gameState.drawingUser =
-              tempLobby?.players?.[currentDrawerIndex + 1]?.playerId;
-            socketIdForDrawingNext =
-              tempLobby?.players?.[currentDrawerIndex + 1]?.socketId;
-          }
-
-          lobbyRepository
-            .save(tempLobby)
-            .then((saveres) => {
-              socketIO.to(lobbyName).emit('lobbyStatusChange', {
-                newStatus: 'roundOver',
-                info: {
-                  drawingNext: saveres.gameState.drawingUser,
-                  // TODO doing unmasked word here ro unmasked word event? zzz
-                },
-              });
-
-              setTimeout(() => {
-                let wordsToPickFrom = getRandomWords(3);
-
-                socketIO.to(lobbyName).emit('lobbyStatusChange', {
-                  newStatus: 'pickingWord',
-                  info: { drawingUser: saveres.gameState.drawingUser },
-                });
-
-                socketIO.to(socketIdForDrawingNext).emit('pickAWord', {
-                  arrayOfWordOptions: wordsToPickFrom,
-                });
-              }, 10000);
-            })
-            .catch((saverr) => {
-              console.log(saverr);
-            });
+          prepareNextRound(tempLobby);
         }
       })
       .catch((err) => {
