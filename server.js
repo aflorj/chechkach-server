@@ -8,10 +8,10 @@ import { Repository, Schema } from 'redis-om';
 import { promises as fs } from 'fs';
 
 // TODOs:
-// - scoreboard
 // - handle disconnects/reconnects
 // - hints
 // - settings when creating a lobby (time to draw, # of rounds, hints, transfer ownership?, ...)
+// - avatars - drawings?
 
 // Array of words
 let words = [];
@@ -54,6 +54,7 @@ const lobbySchema = new Schema('lobby', {
   status: { type: 'string' },
   playersIds: { type: 'string[]', path: '$.players[*].playerId' },
   playersSocketIds: { type: 'string[]', path: '$.players[*].socketId' },
+  playersScore: { type: 'number[]', path: '$.players[*].score' },
 });
 
 const app = express();
@@ -99,6 +100,48 @@ app.use(bodyParser.json());
 const PORT = process.env.PORT || 9030;
 
 const prepareNextRound = (tempLobby) => {
+  // calculate points for winner and the person drawing
+  // TODO balance this at some point down the road
+
+  // map over players and check if they had a correct guess and then score them on based on their placement
+  let roundScoreboard = tempLobby?.players?.map((player) => ({
+    playerId: player?.playerId,
+    score:
+      tempLobby?.gameState?.roundWinners?.findIndex(
+        (pl) => pl?.userName === player?.playerId
+      ) === -1
+        ? 0
+        : 500 -
+          tempLobby?.gameState?.roundWinners?.findIndex(
+            (pl) => pl?.userName === player?.playerId
+          ) *
+            50,
+  }));
+
+  // find drawer and award him point based the number of correct guesses
+  let drawerIndexOnTheRoundScoreboard = roundScoreboard?.findIndex(
+    (el) => el?.playerId === tempLobby?.gameState?.drawingUser
+  );
+  roundScoreboard[drawerIndexOnTheRoundScoreboard].score =
+    tempLobby?.gameState?.roundWinners?.length === 0
+      ? 0
+      : 200 + tempLobby?.gameState?.roundWinners?.length * 50; // 0 pts if noone guessed correcty and 200 base + 50 per correct guess if there are round winners
+
+  // and finnally sort the roundScoreboard array
+  let sortedRoundScoreboard = roundScoreboard?.sort(
+    (a, b) => b?.score - a?.score
+  );
+
+  // add points to players total
+  sortedRoundScoreboard
+    ?.filter((pws) => pws?.score > 0)
+    ?.forEach((sbtz) => {
+      let tindex = tempLobby?.players?.findIndex(
+        (tlp) => tlp?.playerId === sbtz?.playerId
+      );
+      tempLobby.players[tindex].score += sbtz?.score;
+    });
+
   let tempUnmaskedWord = tempLobby.gameState.wordToGuess;
   // determine who is drawing next
 
@@ -117,7 +160,6 @@ const prepareNextRound = (tempLobby) => {
     tempLobby.status = 'roundOver';
     tempLobby.gameState.drawState = [];
     tempLobby.gameState.wordToGuess = null;
-    // TODO tempLobby.gameState.scoreBoard = ...
     tempLobby.gameState.roundWinners = [];
 
     lobbyRepository
@@ -127,6 +169,8 @@ const prepareNextRound = (tempLobby) => {
           newStatus: 'roundOver',
           info: {
             unmaskedWord: tempUnmaskedWord,
+            roundScoreboard: sortedRoundScoreboard,
+            players: tempLobby?.players,
           },
         });
       })
@@ -144,7 +188,6 @@ const prepareNextRound = (tempLobby) => {
     tempLobby.status = 'roundOver';
     tempLobby.gameState.drawState = [];
     tempLobby.gameState.wordToGuess = null;
-    // TODO tempLobby.gameState.scoreBoard = ...
     tempLobby.gameState.roundWinners = [];
 
     if (currentDrawerIndex + 1 >= tempLobby?.players?.length) {
@@ -169,6 +212,8 @@ const prepareNextRound = (tempLobby) => {
           info: {
             drawingNext: saveres.gameState.drawingUser,
             unmaskedWord: tempUnmaskedWord,
+            roundScoreboard: sortedRoundScoreboard,
+            players: tempLobby?.players,
           },
         });
 
@@ -225,7 +270,8 @@ socketIO.on('connection', (socket) => {
               playerId: userName,
               socketId: socket?.id,
               connected: true,
-              isOwner: lobbyToJoin?.players?.length === 0 ? true : false, // become lobby owner if you are joing an empty lobby
+              isOwner: lobbyToJoin?.players?.length === 0 ? true : false, // become lobby owner if you are joining an empty lobby
+              score: 0,
               // ready: false, CHANGE: we don't track players status anymore
             },
           ];
@@ -342,6 +388,23 @@ socketIO.on('connection', (socket) => {
                     socketId: socket.id,
                   });
 
+                  // if this was the first correct guess and there is at least 31s left in the round we set time tmieleft to 30 and emit the event
+                  if (
+                    tempLobby?.gameState?.roundWinners?.length === 1 &&
+                    tempLobby?.gameState?.roundEndTimeStamp -
+                      new Date().getTime() / 1000 >=
+                      31
+                  ) {
+                    let newRoundEndTimeStamp =
+                      Math.floor(new Date().getTime() / 1000) + 30;
+                    tempLobby.gameState.roundEndTimeStamp =
+                      newRoundEndTimeStamp;
+
+                    socketIO.to(lobbyName).emit('newRoundEndTimeStamp', {
+                      newRoundEndTimeStamp: newRoundEndTimeStamp,
+                    });
+                  }
+
                   lobbyRepository
                     .save(tempLobby)
                     .then((winnerSaveRes) => {
@@ -419,7 +482,6 @@ socketIO.on('connection', (socket) => {
             drawingUser: userName,
             drawState: [],
             wordToGuess: null,
-            scoreBoard: [],
             roundWinners: [],
             roundEndTimeStamp: null,
           };
@@ -473,7 +535,7 @@ socketIO.on('connection', (socket) => {
 
         tempLobby.status = 'playing';
         tempLobby.gameState.wordToGuess = pickedWord;
-        tempLobby.gameState.roundEndTimeStamp = epochNow + 10; // TODO hardcoded for testing
+        tempLobby.gameState.roundEndTimeStamp = epochNow + 60;
 
         lobbyRepository
           .save(tempLobby)
@@ -486,7 +548,7 @@ socketIO.on('connection', (socket) => {
               info: {
                 maskedWord: maskedWord,
                 drawingUser: userName,
-                roundEndTimeStamp: epochNow + 10, // TODO hardcoded for testing
+                roundEndTimeStamp: epochNow + 60,
               },
             });
           })
