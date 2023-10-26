@@ -181,6 +181,7 @@ const prepareNextRound = (tempLobby) => {
     tempLobby.gameState.wordToGuess = null;
     tempLobby.gameState.roundWinners = [];
     tempLobby.gameState.hints = [];
+    tempLobby.gameState.lines = [];
 
     lobbyRepository
       .save(tempLobby)
@@ -210,6 +211,7 @@ const prepareNextRound = (tempLobby) => {
     tempLobby.gameState.wordToGuess = null;
     tempLobby.gameState.roundWinners = [];
     tempLobby.gameState.hints = [];
+    tempLobby.gameState.lines = [];
 
     if (currentDrawerIndex + 1 >= tempLobby?.players?.length) {
       // next round
@@ -505,6 +507,7 @@ socketIO.on('connection', (socket) => {
             wordToGuess: null,
             roundWinners: [],
             roundEndTimeStamp: null,
+            lines: [],
           };
 
           let wordsToPickFrom = getRandomWords(3);
@@ -583,14 +586,68 @@ socketIO.on('connection', (socket) => {
       });
   });
 
+  // this is every single drawn pixel coming in and immidiately being sent to other players for a 'real-time' expirence
   socket.on('draw', ({ newLine, lobbyName }) => {
-    // update redis?
-    // TODO
-
     // emit new paths as a 'newLine' to all players in the lobby except the person drawing
     socket.to(lobbyName).emit('newLine', {
       newLine: newLine,
     });
+  });
+
+  // this is a 'full-line' coming in - it is an array of pixels coming in after the player relases the mouse button hold. It is used to update the state in redis which allows the 'undo' action and reconnects to work
+  socket.on('fullLine', ({ fullLine, lobbyName }) => {
+    lobbyRepository
+      .search()
+      .where('name')
+      .equals(lobbyName)
+      .returnFirst()
+      .then((ourLobby) => {
+        let tempLobby = ourLobby;
+        tempLobby.gameState.lines.push(fullLine);
+
+        lobbyRepository
+          .save(tempLobby)
+          .then((resp) => {
+            // no need to do anything here
+          })
+          .catch((dcserr) => {
+            console.log('save on disconnect error: ', dcserr);
+          });
+      })
+      .catch((err) => {
+        console.log(err);
+      });
+  });
+
+  socket.on('undo', ({ lobbyName }) => {
+    lobbyRepository
+      .search()
+      .where('name')
+      .equals(lobbyName)
+      .returnFirst()
+      .then((ourLobby) => {
+        let tempLobby = ourLobby;
+
+        let preUndoLines = tempLobby.gameState.lines;
+        preUndoLines.pop();
+        tempLobby.gameState.lines = preUndoLines;
+
+        lobbyRepository
+          .save(tempLobby)
+          .then((resp) => {
+            // emit the full drawing to all the users to reset the canvas with these lines
+            socketIO.to(lobbyName).emit('canvasAfterRedo', {
+              newCanvas: resp.gameState.lines,
+              isCanvasEmpty: resp.gameState.lines.length === 0 ? true : false,
+            });
+          })
+          .catch((xerr) => {
+            console.log(xerr);
+          });
+      })
+      .catch((err) => {
+        console.log(err);
+      });
   });
 
   socket.on('triggerRoundEndByTimer', ({ userName, lobbyName }) => {
