@@ -9,9 +9,10 @@ import { promises as fs } from 'fs';
 
 // TODOs:
 // - handle disconnects/reconnects
-// - hints
 // - settings when creating a lobby (time to draw, # of rounds, hints, transfer ownership?, ...)
 // - avatars - drawings?
+// - reset player points
+// - undo line
 
 // Array of words
 let words = [];
@@ -41,6 +42,24 @@ function getRandomWords(count) {
   }
 
   return randomWords;
+}
+
+// generate hints
+function getRandomIndexesAndLetters(word) {
+  const result = [];
+
+  // Generate two distinct random indexes
+  let index1, index2;
+  do {
+    index1 = Math.floor(Math.random() * word.length);
+    index2 = Math.floor(Math.random() * word.length);
+  } while (index1 === index2);
+
+  // Create objects with index and letter properties
+  result.push({ index: index1, letter: word[index1] });
+  result.push({ index: index2, letter: word[index2] });
+
+  return result;
 }
 
 const checkForCloseGuess = (guess, toGuess) => {
@@ -161,6 +180,7 @@ const prepareNextRound = (tempLobby) => {
     tempLobby.gameState.drawState = [];
     tempLobby.gameState.wordToGuess = null;
     tempLobby.gameState.roundWinners = [];
+    tempLobby.gameState.hints = [];
 
     lobbyRepository
       .save(tempLobby)
@@ -189,6 +209,7 @@ const prepareNextRound = (tempLobby) => {
     tempLobby.gameState.drawState = [];
     tempLobby.gameState.wordToGuess = null;
     tempLobby.gameState.roundWinners = [];
+    tempLobby.gameState.hints = [];
 
     if (currentDrawerIndex + 1 >= tempLobby?.players?.length) {
       // next round
@@ -536,6 +557,7 @@ socketIO.on('connection', (socket) => {
         tempLobby.status = 'playing';
         tempLobby.gameState.wordToGuess = pickedWord;
         tempLobby.gameState.roundEndTimeStamp = epochNow + 60;
+        tempLobby.gameState.hints = getRandomIndexesAndLetters(pickedWord);
 
         lobbyRepository
           .save(tempLobby)
@@ -583,6 +605,26 @@ socketIO.on('connection', (socket) => {
         // make sure the player that triggered this event is the person drawing
         if (tempLobby.gameState.drawingUser === userName) {
           prepareNextRound(tempLobby);
+        }
+      })
+      .catch((err) => {
+        console.log(err);
+      });
+  });
+
+  socket.on('triggerHint', ({ userName, lobbyName, index }) => {
+    lobbyRepository
+      .search()
+      .where('name')
+      .equals(lobbyName)
+      .returnFirst()
+      .then((ourLobby) => {
+        // make sure the player that triggered this event is the person drawing
+        if (ourLobby.gameState.drawingUser === userName) {
+          // emit hint
+          socket.to(lobbyName).emit('hint', {
+            hint: ourLobby?.gameState?.hints[index],
+          });
         }
       })
       .catch((err) => {
