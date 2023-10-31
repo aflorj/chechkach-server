@@ -12,7 +12,6 @@ import { promises as fs } from 'fs';
 // - settings when creating a lobby (time to draw, # of rounds, hints, transfer ownership?, ...)
 // - avatars - drawings?
 // - reset player points
-// - undo line
 
 // Array of words
 let words = [];
@@ -181,7 +180,7 @@ const prepareNextRound = (tempLobby) => {
     tempLobby.gameState.wordToGuess = null;
     tempLobby.gameState.roundWinners = [];
     tempLobby.gameState.hints = [];
-    tempLobby.gameState.lines = [];
+    tempLobby.gameState.canvas = [];
 
     lobbyRepository
       .save(tempLobby)
@@ -211,7 +210,7 @@ const prepareNextRound = (tempLobby) => {
     tempLobby.gameState.wordToGuess = null;
     tempLobby.gameState.roundWinners = [];
     tempLobby.gameState.hints = [];
-    tempLobby.gameState.lines = [];
+    tempLobby.gameState.canvas = [];
 
     if (currentDrawerIndex + 1 >= tempLobby?.players?.length) {
       // next round
@@ -507,7 +506,7 @@ socketIO.on('connection', (socket) => {
             wordToGuess: null,
             roundWinners: [],
             roundEndTimeStamp: null,
-            lines: [],
+            canvas: [],
           };
 
           let wordsToPickFrom = getRandomWords(3);
@@ -594,6 +593,39 @@ socketIO.on('connection', (socket) => {
     });
   });
 
+  socket.on('fill', ({ fillInfo, lobbyName }) => {
+    // emit to all the players in the lobby except the person drawing
+    socket.to(lobbyName).emit('fill', {
+      fillInfo: fillInfo,
+    });
+
+    // store in Redis
+    lobbyRepository
+      .search()
+      .where('name')
+      .equals(lobbyName)
+      .returnFirst()
+      .then((ourLobby) => {
+        let tempLobby = ourLobby;
+        tempLobby.gameState.canvas.push({
+          type: 'fill',
+          content: fillInfo,
+        });
+
+        lobbyRepository
+          .save(tempLobby)
+          .then((resp) => {
+            // no need to do anything here
+          })
+          .catch((fillerr) => {
+            console.log('save fill error: ', fillerr);
+          });
+      })
+      .catch((err) => {
+        console.log(err);
+      });
+  });
+
   // this is a 'full-line' coming in - it is an array of pixels coming in after the player relases the mouse button hold. It is used to update the state in redis which allows the 'undo' action and reconnects to work
   socket.on('fullLine', ({ fullLine, lobbyName }) => {
     lobbyRepository
@@ -603,7 +635,10 @@ socketIO.on('connection', (socket) => {
       .returnFirst()
       .then((ourLobby) => {
         let tempLobby = ourLobby;
-        tempLobby.gameState.lines.push(fullLine);
+        tempLobby.gameState.canvas.push({
+          type: 'line',
+          content: fullLine,
+        });
 
         lobbyRepository
           .save(tempLobby)
@@ -628,17 +663,17 @@ socketIO.on('connection', (socket) => {
       .then((ourLobby) => {
         let tempLobby = ourLobby;
 
-        let preUndoLines = tempLobby.gameState.lines;
-        preUndoLines.pop();
-        tempLobby.gameState.lines = preUndoLines;
+        let preUndoCanvas = tempLobby.gameState.canvas;
+        preUndoCanvas.pop();
+        tempLobby.gameState.canvas = preUndoCanvas;
 
         lobbyRepository
           .save(tempLobby)
           .then((resp) => {
-            // emit the full drawing to all the users to reset the canvas with these lines
-            socketIO.to(lobbyName).emit('canvasAfterRedo', {
-              newCanvas: resp.gameState.lines,
-              isCanvasEmpty: resp.gameState.lines.length === 0 ? true : false,
+            // emit the full drawing to all the users to reset the canvas to full-1
+            socketIO.to(lobbyName).emit('canvasAfterUndo', {
+              newCanvas: resp.gameState.canvas,
+              isCanvasEmpty: resp.gameState.canvas.length === 0 ? true : false,
             });
           })
           .catch((xerr) => {
