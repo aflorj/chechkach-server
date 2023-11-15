@@ -199,9 +199,17 @@ const prepareNextRound = (tempLobby) => {
       });
 
     setTimeout(() => {
-      socketIO.to(tempLobby.name).emit('lobbyStatusChange', {
-        newStatus: 'gameOver',
-      });
+      tempLobby.status = 'gameOver';
+      lobbyRepository
+        .save(tempLobby)
+        .then((gameoverlobby) => {
+          socketIO.to(tempLobby.name).emit('lobbyStatusChange', {
+            newStatus: 'gameOver',
+          });
+        })
+        .catch((gameovererror) => {
+          console.log('game over error: ', gameovererror);
+        });
     }, 7500);
   } else {
     // apply changes/resets to the lobby
@@ -262,7 +270,44 @@ const prepareNextRound = (tempLobby) => {
 socketIO.on('connection', (socket) => {
   console.log('WebSocket client connected: ', socket?.id);
 
-  socket.on('join', ({ lobbyName, userName }) => {
+  socket.on('join', ({ lobbyName, userName, lastKnownSocketId }) => {
+    // DOING
+
+    // use client's socketId to check if they are already in any of the lobbies
+
+    if (lastKnownSocketId) {
+      // we need to check if this person is 1) reconnecting or 2) already active in another lobby
+      console.log('11111111111: ', lastKnownSocketId);
+      lobbyRepository
+        .search()
+        .where('playersSocketIds')
+        .contains(lastKnownSocketId)
+        .returnFirst()
+        .then((lobbyWithLastKnown) => {
+          console.log('22222: ', lobbyWithLastKnown);
+          if (lobbyWithLastKnown) {
+            // this user is already connected to a lobby - check if this is the current lobby he is trying to (re)connect to or a different lobby
+            if (lobbyWithLastKnown?.name == lobbyName) {
+              // reconnecting
+            } else {
+              // active somewhere else
+              socketIO.to(socket?.id).emit('connectAttemptResponse', {
+                response: {
+                  alreadyActive: true,
+                },
+              });
+            }
+
+            //
+            return;
+            //
+          }
+        })
+        .catch((oops) => {
+          console.log('oops: ', oops);
+        });
+    }
+
     // join the socket and lobby if it exist or return an error if it doesn't
 
     lobbyRepository
@@ -294,23 +339,36 @@ socketIO.on('connection', (socket) => {
               connected: true,
               isOwner: lobbyToJoin?.players?.length === 0 ? true : false, // become lobby owner if you are joining an empty lobby
               score: 0,
-              // ready: false, CHANGE: we don't track players status anymore
             },
           ];
 
           lobbyRepository
             .save(lobbyToJoin)
             .then((ljRes) => {
-              console.log('lobbyJoinResponse: ', ljRes);
-
-              // emit the 'starting' lobby state as a 'lobbyUpdate' to all players in the lobby
-              // socketIO.to(lobbyName).emit('lobbyUpdate', {
-              //   newLobbyState: ljRes,
-              // });
-              // TODO DOING - replaced with more specific 'userStateChange'
               socketIO.to(lobbyName).emit('userStateChange', {
                 newUserState: ljRes.players,
               });
+
+              socketIO.to(socket?.id).emit('connectAttemptResponse', {
+                response: {
+                  allGood: true,
+                },
+              });
+
+              socketIO.to(lobbyName).emit('message', {
+                message: {
+                  type: 'playerJoiningOrLeaving',
+                  content: `Player ${userName} joined the lobby.`,
+                },
+                userName: 'server',
+                serverMessage: true,
+              });
+
+              // console.log('lobbies after join: ', lobbies);
+              console.log(
+                'all rooms after connect: ',
+                socketIO?.sockets?.adapter?.rooms
+              );
             })
             .catch((err) => {
               console.log('lobbyJoin error: ', err);
@@ -320,24 +378,6 @@ socketIO.on('connection', (socket) => {
       .catch((err) => {
         console.log('error pri iskanju 333: ', err);
       });
-
-    // ce bom kje rabu socketId
-    // lobbies.get(lobbyName).push({
-    //   socketId: socket?.id,
-    //   userName: userName,
-    // });
-
-    socketIO.to(lobbyName).emit('message', {
-      message: {
-        type: 'playerJoiningOrLeaving',
-        content: `Player ${userName} joined the lobby.`,
-      },
-      userName: 'server',
-      serverMessage: true,
-    });
-
-    // console.log('lobbies after join: ', lobbies);
-    console.log('all rooms after connect: ', socketIO?.sockets?.adapter?.rooms);
   });
 
   socket.on(
@@ -730,37 +770,38 @@ socketIO.on('connection', (socket) => {
     lobbyRepository
       .search()
       .where('playersSocketIds')
-      .contain(socket?.id)
-      .return.first()
+      .contains(socket?.id)
+      .returnFirst()
       .then((r) => {
         console.log('to je leaval: ', r);
 
-        if (r?.status === 'open') {
-          // if the status of the lobby equals 'open' we remove the player on disconnect
-          // doing
-          let tempLobby = r;
-          let playerIndex = tempLobby?.players?.findIndex(
-            (player) => player?.socketId === socket?.id
-          );
+        let tempLobby = r;
+        let playerIndex = tempLobby?.players?.findIndex(
+          (player) => player?.socketId === socket?.id
+        );
+
+        if (r?.status === 'open' || r?.status === 'gameOver') {
+          // if the status of the lobby equals 'open' or 'gameOver' we remove the player on disconnect
+
           tempLobby?.players?.splice?.(playerIndex, 1);
-
-          lobbyRepository
-            .save(tempLobby)
-            .then((dcsr) => {
-              console.log('save on disconnect response: ', dcsr);
-
-              // emit the new lobby state as a 'lobbyUpdate' to all players in the lobby
-              // TODO DOING - replaced with more specific 'userStateChange'
-              socketIO.to(r?.name).emit('userStateChange', {
-                newUserState: dcsr.players,
-              });
-            })
-            .catch((dcserr) => {
-              console.log('save on disconnect error: ', dcserr);
-            });
+        } else {
+          // if the game is active, we change their 'connected' to false
+          tempLobby.players[playerIndex].connected = false;
         }
+        lobbyRepository
+          .save(tempLobby)
+          .then((dcsr) => {
+            console.log('save on disconnect response: ', dcsr);
 
-        // if the game is active, we don't (immediately) remove them?
+            // emit the new lobby state as a 'lobbyUpdate' to all players in the lobby
+
+            socketIO.to(r?.name).emit('userStateChange', {
+              newUserState: dcsr.players,
+            });
+          })
+          .catch((dcserr) => {
+            console.log('save on disconnect error: ', dcserr);
+          });
       })
       .catch((err) => {
         console.log('liv eror: ', err);
@@ -835,28 +876,72 @@ app.get('/api/getLobby/:id', function (req, res) {
 
 app.post('/api/joinLobby', function (req, res) {
   const lobbyName = req?.body?.lobbyName;
+  const lastKnownSocketId = req?.body?.lastKnownSocketId;
 
-  // logika za preverjanje ustvarjanja lobbyja - lobby s tem imenom se ne obstaja
+  // if request has lastKnownSocketId check if we are already in a lobby and is it this one (reconnecting user)
+
+  if (req?.body?.lastKnownSocketId) {
+    lobbyRepository
+      .search()
+      .where('playersSocketIds')
+      .contains(lastKnownSocketId)
+      .returnFirst()
+      .then((lobbyWithLastKnown) => {
+        if (lobbyWithLastKnown) {
+          // this user is already connected to a lobby - check if it is this one
+          if (lobbyName == lobbyWithLastKnown?.name) {
+            // this is a reconnect
+            console.log(
+              `lobby ${lobbyName} exist and the user is reconnecting to it`
+            );
+            res.status(200).json({
+              message: `You can reconnect ${lobbyName}`,
+              lobbyInfo: ourLobby,
+            });
+            return;
+          } else {
+            // not reconnect but not allowed to join (only 1 active game at a time)
+            console.log(`This user is already in another lobby`);
+            res.status(200).json({
+              message: `Lobby ${lobbyName} is full`,
+              alreadyActiveInAnotherLobby: true, // TODO handle on the FE
+            });
+            return;
+          }
+        }
+      })
+      .catch((errorka) => {
+        console.log(errorka);
+      });
+  }
+
   lobbyRepository
     .search()
     .where('name')
     .equals(lobbyName)
-    .returnAll()
-    .then((response) => {
-      if (response?.length === 0) {
+    .returnFirst()
+    .then((ourLobby) => {
+      if (ourLobby) {
+        // lobbby exists
+        if (ourLobby?.players?.length == 10) {
+          // full
+          console.log(`lobby ${lobbyName} is full`);
+          res.status(200).json({
+            message: `Lobby ${lobbyName} is full`,
+            full: true,
+          });
+        } else {
+          console.log(`lobby ${lobbyName} exist`);
+          res.status(200).json({
+            message: `You can join ${lobbyName}`,
+            lobbyInfo: ourLobby,
+          });
+        }
+      } else {
         // lobby doesn't exist
         console.log(`lobby ${lobbyName} doesn't exist`);
         res.status(404).json({
           message: `Lobby ${lobbyName} doesn't exist`,
-        });
-      } else {
-        // lobbby exists and we can join
-
-        //  TODO  full lobby, password, active game,...
-        console.log(`lobby ${lobbyName} exist`);
-        res.status(200).json({
-          message: `You can join ${lobbyName}`,
-          lobbyInfo: response[0],
         });
       }
     })
