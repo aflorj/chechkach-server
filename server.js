@@ -62,7 +62,7 @@ function getRandomIndexesAndLetters(word) {
 }
 
 const checkForCloseGuess = (guess, toGuess) => {
-  console.log(`checking proximity for ${guess} and ${toGuess}`);
+  // console.log(`checking proximity for ${guess} and ${toGuess}`);
   // TODO comparison logic
 };
 
@@ -90,21 +90,21 @@ const lobbyRepository = new Repository(lobbySchema, redisClient);
 redisClient
   .connect()
   .then((res) => {
-    console.log('Redis connect success: ', res);
+    // console.log('Redis connect success: ', res);
   })
   .catch((err) => {
     console.error('Redis no connect: ', err);
   });
 
 redisClient.on('ready', () => {
-  console.log('Redis ready - Connected!');
+  // console.log('Redis ready - Connected!');
   lobbyRepository
     .createIndex()
     .then((res) => {
-      console.log('create index res: ', res);
+      // console.log('create index res: ', res);
     })
     .catch((err) => {
-      console.log('create index error res: ', err);
+      // console.log('create index error res: ', err);
     });
 });
 
@@ -271,113 +271,162 @@ socketIO.on('connection', (socket) => {
   console.log('WebSocket client connected: ', socket?.id);
 
   socket.on('join', ({ lobbyName, userName, lastKnownSocketId }) => {
+    const normalConnectAttempt = () => {
+      // join the socket and lobby if it exist or return an error if it doesn't
+
+      lobbyRepository
+        .search()
+        .where('name')
+        .equals(lobbyName)
+        .returnAll()
+        .then((response) => {
+          if (response?.length === 0) {
+            // lobby that we are trying to join doesn't exist - return an error
+            // TODO ne vem tocno ki tu nrdit
+            // res.status(404).json({
+            //   message: `Lobby "${lobbyName}" doesn't exist.`,
+            // });
+          } else {
+            // lobbby with this name exists
+
+            // we join the socket
+            socket.join(lobbyName);
+
+            // and we join the lobby
+            let lobbyToJoin = response?.[0];
+            let oldPlayers = lobbyToJoin?.players;
+            lobbyToJoin.players = [
+              ...oldPlayers,
+              {
+                playerId: userName,
+                socketId: socket?.id,
+                connected: true,
+                isOwner: lobbyToJoin?.players?.length === 0 ? true : false, // become lobby owner if you are joining an empty lobby
+                score: 0,
+              },
+            ];
+
+            lobbyRepository
+              .save(lobbyToJoin)
+              .then((ljRes) => {
+                socketIO.to(lobbyName).emit('userStateChange', {
+                  newUserState: ljRes.players,
+                });
+
+                socketIO.to(socket?.id).emit('connectAttemptResponse', {
+                  response: {
+                    allGood: true,
+                  },
+                });
+
+                socketIO.to(lobbyName).emit('message', {
+                  message: {
+                    type: 'playerJoiningOrLeaving',
+                    content: `Player ${userName} joined the lobby.`,
+                  },
+                  userName: 'server',
+                  serverMessage: true,
+                });
+
+                // console.log('lobbies after join: ', lobbies);
+                // console.log(
+                //   'all rooms after connect: ',
+                //   socketIO?.sockets?.adapter?.rooms
+                // );
+              })
+              .catch((err) => {
+                console.log('lobbyJoin error: ', err);
+              });
+          }
+        })
+        .catch((err) => {
+          console.log('error pri iskanju 333: ', err);
+        });
+    };
     // DOING
 
     // use client's socketId to check if they are already in any of the lobbies
 
     if (lastKnownSocketId) {
       // we need to check if this person is 1) reconnecting or 2) already active in another lobby
-      console.log('11111111111: ', lastKnownSocketId);
+
       lobbyRepository
         .search()
         .where('playersSocketIds')
         .contains(lastKnownSocketId)
         .returnFirst()
         .then((lobbyWithLastKnown) => {
-          console.log('22222: ', lobbyWithLastKnown);
           if (lobbyWithLastKnown) {
             // this user is already connected to a lobby - check if this is the current lobby he is trying to (re)connect to or a different lobby
             if (lobbyWithLastKnown?.name == lobbyName) {
+              let tempReconnectLobby = lobbyWithLastKnown;
+
               // reconnecting
+              // we join the socket
+              socket.join(lobbyName);
+
+              // find index
+              let reconnectedPlayerIndex =
+                tempReconnectLobby?.players?.findIndex(
+                  (player) => player?.socketId === lastKnownSocketId
+                );
+
+              // change connected to true
+              tempReconnectLobby.players[
+                reconnectedPlayerIndex
+              ].connected = true;
+
+              // set the new socketId
+              tempReconnectLobby.players[reconnectedPlayerIndex].socketId =
+                socket?.id;
+
+              lobbyRepository
+                .save(tempReconnectLobby)
+                .then((rcnres) => {
+                  socketIO.to(lobbyName).emit('userStateChange', {
+                    newUserState: rcnres.players,
+                  });
+
+                  socketIO.to(socket?.id).emit('connectAttemptResponse', {
+                    response: {
+                      allGood: true,
+                    },
+                  });
+
+                  socketIO.to(lobbyName).emit('message', {
+                    message: {
+                      type: 'playerJoiningOrLeaving',
+                      content: `Player ${userName} reconnected.`,
+                    },
+                    userName: 'server',
+                    serverMessage: true,
+                  });
+                })
+                .catch((err) => {
+                  console.log('lobbyJoin error: ', err);
+                });
             } else {
-              // active somewhere else
+              // TODO active somewhere else
               socketIO.to(socket?.id).emit('connectAttemptResponse', {
                 response: {
                   alreadyActive: true,
                 },
               });
-            }
 
-            //
-            return;
-            //
+              //
+            }
+          } else {
+            // this person was active before but the lobby he was a part of doesn't exist anymore
+            normalConnectAttempt();
           }
         })
         .catch((oops) => {
           console.log('oops: ', oops);
         });
+    } else {
+      // completely fresh connect attempt
+      normalConnectAttempt();
     }
-
-    // join the socket and lobby if it exist or return an error if it doesn't
-
-    lobbyRepository
-      .search()
-      .where('name')
-      .equals(lobbyName)
-      .returnAll()
-      .then((response) => {
-        if (response?.length === 0) {
-          // lobby that we are trying to join doesn't exist - return an error
-          // TODO ne vem tocno ki tu nrdit
-          // res.status(404).json({
-          //   message: `Lobby "${lobbyName}" doesn't exist.`,
-          // });
-        } else {
-          // lobbby with this name exists
-
-          // we join the socket
-          socket.join(lobbyName);
-
-          // and we join the lobby
-          let lobbyToJoin = response?.[0];
-          let oldPlayers = lobbyToJoin?.players;
-          lobbyToJoin.players = [
-            ...oldPlayers,
-            {
-              playerId: userName,
-              socketId: socket?.id,
-              connected: true,
-              isOwner: lobbyToJoin?.players?.length === 0 ? true : false, // become lobby owner if you are joining an empty lobby
-              score: 0,
-            },
-          ];
-
-          lobbyRepository
-            .save(lobbyToJoin)
-            .then((ljRes) => {
-              socketIO.to(lobbyName).emit('userStateChange', {
-                newUserState: ljRes.players,
-              });
-
-              socketIO.to(socket?.id).emit('connectAttemptResponse', {
-                response: {
-                  allGood: true,
-                },
-              });
-
-              socketIO.to(lobbyName).emit('message', {
-                message: {
-                  type: 'playerJoiningOrLeaving',
-                  content: `Player ${userName} joined the lobby.`,
-                },
-                userName: 'server',
-                serverMessage: true,
-              });
-
-              // console.log('lobbies after join: ', lobbies);
-              console.log(
-                'all rooms after connect: ',
-                socketIO?.sockets?.adapter?.rooms
-              );
-            })
-            .catch((err) => {
-              console.log('lobbyJoin error: ', err);
-            });
-        }
-      })
-      .catch((err) => {
-        console.log('error pri iskanju 333: ', err);
-      });
   });
 
   socket.on(
@@ -393,7 +442,7 @@ socketIO.on('connection', (socket) => {
         .equals(lobbyName)
         .returnFirst()
         .then((ourLobby) => {
-          console.log('our lobby on message res: ', ourLobby);
+          // console.log('our lobby on message res: ', ourLobby);
 
           let tempLobby = ourLobby;
 
@@ -435,12 +484,12 @@ socketIO.on('connection', (socket) => {
 
                 return;
               } else {
-                console.log('checking for correct guess');
+                // console.log('checking for correct guess');
                 let wordToGuess = ourLobby.gameState.wordToGuess;
                 let guess = messageContent?.trim()?.toLowerCase();
                 if (guess === wordToGuess) {
                   // correct guess
-                  console.log('correct guess!');
+                  // console.log('correct guess!');
 
                   // don't broadcast the correct guess - broadcast the correct guess server alert instead
 
@@ -524,7 +573,7 @@ socketIO.on('connection', (socket) => {
       .equals(lobbyName)
       .returnFirst()
       .then((ourLobby) => {
-        console.log('ulres: ', ourLobby);
+        // console.log('ulres: ', ourLobby);
         // find index of our player in the lobby
         let tempLobby = ourLobby;
         let playerIndex = tempLobby?.players?.findIndex(
@@ -534,7 +583,7 @@ socketIO.on('connection', (socket) => {
         // check if the player even has the permission to start the game (isOwner === true)
         if (tempLobby.players[playerIndex].isOwner) {
           // they are the owner - start
-          console.log('the owner of the lobby started the game');
+          // console.log('the owner of the lobby started the game');
 
           // starting the game
           tempLobby.status = 'pickingWord';
@@ -555,7 +604,7 @@ socketIO.on('connection', (socket) => {
           lobbyRepository
             .save(tempLobby)
             .then((saveres) => {
-              console.log('save res: ', saveres);
+              // console.log('save res: ', saveres);
               socketIO.to(lobbyName).emit('lobbyStatusChange', {
                 newStatus: 'pickingWord',
                 info: { drawingUser: userName },
@@ -592,7 +641,7 @@ socketIO.on('connection', (socket) => {
       .equals(lobbyName)
       .returnFirst()
       .then((ourLobby) => {
-        console.log('ulres: ', ourLobby);
+        // console.log('ulres: ', ourLobby);
         // find index of our player in the lobby
         let tempLobby = ourLobby;
 
@@ -765,6 +814,7 @@ socketIO.on('connection', (socket) => {
   });
 
   socket.on('disconnect', () => {
+    // TODO handle lobbyb owner disconnect no matter the lobbby status
     console.log(`Disconnect msg coming from socketid ${socket?.id}`);
 
     lobbyRepository
@@ -773,7 +823,7 @@ socketIO.on('connection', (socket) => {
       .contains(socket?.id)
       .returnFirst()
       .then((r) => {
-        console.log('to je leaval: ', r);
+        // console.log('to je leaval: ', r);
 
         let tempLobby = r;
         let playerIndex = tempLobby?.players?.findIndex(
@@ -786,7 +836,7 @@ socketIO.on('connection', (socket) => {
           tempLobby?.players?.splice?.(playerIndex, 1);
         } else {
           // if the game is active, we change their 'connected' to false
-          tempLobby.players[playerIndex].connected = false;
+          tempLobby.players[playerIndex].connected = false; // TODO check error on dc
         }
         lobbyRepository
           .save(tempLobby)
@@ -806,13 +856,8 @@ socketIO.on('connection', (socket) => {
       .catch((err) => {
         console.log('liv eror: ', err);
       });
-    // using socketId, find the lobby user has left
 
     console.log('all rooms after dc: ', socketIO?.sockets?.adapter?.rooms);
-  });
-
-  socket.on('disconnect_details', ({ userName, lobbyName }) => {
-    console.log(`username: ${userName} and lobbyName: ${lobbyName}`);
   });
 });
 
@@ -821,7 +866,7 @@ app.get('/api/getAllLobbies', function (req, res) {
     .search()
     .return.all()
     .then((resp) => {
-      console.log('vsi lobiji res na serverju: ', resp);
+      // console.log('vsi lobiji res na serverju: ', resp);
       if (resp?.length > 0) {
         // obstajajo lobiji
         const lobbiesArray = [];
@@ -953,6 +998,8 @@ app.post('/api/joinLobby', function (req, res) {
 app.post('/api/createLobby', function (req, res) {
   const lobbyName = req?.body?.lobbyName;
 
+  // TODO check if the person creating the lobby is already active in another lobby and then don't create the lobby
+
   // logika za preverjanje ustvarjanja lobbyja - lobby s tem imenom se ne obstaja
   lobbyRepository
     .search()
@@ -969,7 +1016,7 @@ app.post('/api/createLobby', function (req, res) {
             players: [],
           })
           .then((resp) => {
-            console.log('lobby creation response: ', resp);
+            // console.log('lobby creation response: ', resp);
             // lobby successfully created on redis
             res.status(201).json({
               lobbyName: lobbyName,
