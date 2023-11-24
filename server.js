@@ -4,7 +4,7 @@ import cors from 'cors';
 import bodyParser from 'body-parser';
 import { Server } from 'socket.io';
 import redis from 'redis';
-import { Repository, Schema } from 'redis-om';
+import { EntityId, Repository, Schema } from 'redis-om';
 import { promises as fs } from 'fs';
 
 // TODOs:
@@ -64,6 +64,23 @@ function getRandomIndexesAndLetters(word) {
 const checkForCloseGuess = (guess, toGuess) => {
   // console.log(`checking proximity for ${guess} and ${toGuess}`);
   // TODO comparison logic
+};
+
+const determineNextDrawer = (lobbyInfo) => {
+  // find the index of the current drawer
+  const currentDrawerIndex = lobbyInfo?.players?.findIndex(
+    (player) => player?.playerId === lobbyInfo?.gameState?.drawingUser
+  );
+
+  // find all candidates (connected players with lower index)
+  let candidates = lobbyInfo?.players?.filter(
+    (player, index) => index < currentDrawerIndex && player?.connected
+  );
+  if (candidates?.length) {
+    return candidates?.[candidates?.length - 1];
+  } else {
+    return null;
+  }
 };
 
 // TODO fill this up with missing properties
@@ -136,7 +153,7 @@ const prepareNextRound = (tempLobby) => {
             50,
   }));
 
-  // find drawer and award him point based the number of correct guesses
+  // find the drawer and award them point based the number of correct guesses
   let drawerIndexOnTheRoundScoreboard = roundScoreboard?.findIndex(
     (el) => el?.playerId === tempLobby?.gameState?.drawingUser
   );
@@ -170,8 +187,10 @@ const prepareNextRound = (tempLobby) => {
 
   let socketIdForDrawingNext = null;
 
+  let nextDrawer = determineNextDrawer(tempLobby);
   if (
-    currentDrawerIndex + 1 >= tempLobby?.players?.length &&
+    // currentDrawerIndex + 1 >= tempLobby?.players?.length &&
+    nextDrawer === null &&
     tempLobby?.gameState?.totalRounds === tempLobby?.gameState?.roundNo
   ) {
     // gameOver
@@ -220,17 +239,19 @@ const prepareNextRound = (tempLobby) => {
     tempLobby.gameState.hints = [];
     tempLobby.gameState.canvas = [];
 
-    if (currentDrawerIndex + 1 >= tempLobby?.players?.length) {
+    if (nextDrawer === null) {
       // next round
       tempLobby.gameState.roundNo = tempLobby.gameState.roundNo + 1;
-      tempLobby.gameState.drawingUser = tempLobby?.players?.[0]?.playerId;
-      socketIdForDrawingNext = tempLobby?.players?.[0]?.socketId;
+      let allConnected = tempLobby?.players?.filter(
+        (player) => player.connected
+      );
+      tempLobby.gameState.drawingUser =
+        allConnected[allConnected?.length - 1]?.playerId;
+      socketIdForDrawingNext = allConnected[allConnected?.length - 1]?.socketId;
     } else {
       // next player
-      tempLobby.gameState.drawingUser =
-        tempLobby?.players?.[currentDrawerIndex + 1]?.playerId;
-      socketIdForDrawingNext =
-        tempLobby?.players?.[currentDrawerIndex + 1]?.socketId;
+      tempLobby.gameState.drawingUser = nextDrawer?.playerId;
+      socketIdForDrawingNext = nextDrawer?.socketId;
     }
 
     // emit roundOver
@@ -573,7 +594,6 @@ socketIO.on('connection', (socket) => {
       .equals(lobbyName)
       .returnFirst()
       .then((ourLobby) => {
-        // console.log('ulres: ', ourLobby);
         // find index of our player in the lobby
         let tempLobby = ourLobby;
         let playerIndex = tempLobby?.players?.findIndex(
@@ -583,14 +603,14 @@ socketIO.on('connection', (socket) => {
         // check if the player even has the permission to start the game (isOwner === true)
         if (tempLobby.players[playerIndex].isOwner) {
           // they are the owner - start
-          // console.log('the owner of the lobby started the game');
 
           // starting the game
           tempLobby.status = 'pickingWord';
           tempLobby.gameState = {
             totalRounds: 3, // TODO lobby owner should be able to set the # of rounds
             roundNo: 1,
-            drawingUser: userName,
+            drawingUser:
+              tempLobby?.players?.[tempLobby?.players?.length - 1]?.playerId,
             drawState: [],
             wordToGuess: null,
             roundWinners: [],
@@ -599,7 +619,8 @@ socketIO.on('connection', (socket) => {
           };
 
           let wordsToPickFrom = getRandomWords(3);
-          let drawerSocketId = tempLobby.players[playerIndex].socketId;
+          let drawerSocketId =
+            tempLobby?.players?.[tempLobby?.players?.length - 1]?.socketId;
 
           lobbyRepository
             .save(tempLobby)
@@ -607,7 +628,11 @@ socketIO.on('connection', (socket) => {
               // console.log('save res: ', saveres);
               socketIO.to(lobbyName).emit('lobbyStatusChange', {
                 newStatus: 'pickingWord',
-                info: { drawingUser: userName },
+                info: {
+                  drawingUser:
+                    tempLobby?.players?.[tempLobby?.players?.length - 1]
+                      ?.playerId,
+                },
               });
 
               socketIO.to(drawerSocketId).emit('pickAWord', {
@@ -814,7 +839,6 @@ socketIO.on('connection', (socket) => {
   });
 
   socket.on('disconnect', () => {
-    // TODO handle lobbyb owner disconnect no matter the lobbby status
     console.log(`Disconnect msg coming from socketid ${socket?.id}`);
 
     lobbyRepository
@@ -823,41 +847,75 @@ socketIO.on('connection', (socket) => {
       .contains(socket?.id)
       .returnFirst()
       .then((r) => {
-        // console.log('to je leaval: ', r);
-
         let tempLobby = r;
         let playerIndex = tempLobby?.players?.findIndex(
           (player) => player?.socketId === socket?.id
         );
 
-        if (r?.status === 'open' || r?.status === 'gameOver') {
-          // if the status of the lobby equals 'open' or 'gameOver' we remove the player on disconnect
+        // check how many CONNECTED players remain in the lobbby - if the lobby is empty after the disconnect, delete it
+        let throwawayPlayers = [...r?.players];
+        throwawayPlayers?.splice?.(playerIndex, 1);
+        let stillConnected = throwawayPlayers?.filter?.(
+          (player) => player?.connected
+        )?.length;
 
-          tempLobby?.players?.splice?.(playerIndex, 1);
-        } else {
-          // if the game is active, we change their 'connected' to false
-          tempLobby.players[playerIndex].connected = false; // TODO check error on dc
-        }
-        lobbyRepository
-          .save(tempLobby)
-          .then((dcsr) => {
-            console.log('save on disconnect response: ', dcsr);
+        if (stillConnected === 0) {
+          // delete the lobbby as there is no more connected players in it
 
-            // emit the new lobby state as a 'lobbyUpdate' to all players in the lobby
-
-            socketIO.to(r?.name).emit('userStateChange', {
-              newUserState: dcsr.players,
+          lobbyRepository
+            .remove(r[EntityId])
+            .then(() => {
+              console.log('lobby deleted');
+            })
+            .catch((removeerr) => {
+              console.log('error deleting lobby: ', removeerr);
             });
-          })
-          .catch((dcserr) => {
-            console.log('save on disconnect error: ', dcserr);
-          });
+        } else if (stillConnected === 1) {
+          // only only player remains - end the game because not enough active players left
+          // TODO gameover status with extra message about there not beeing enought players
+        } else {
+          // someone disconnected but the game goes on
+
+          // no matter the lobby status check if the user was the owner and change the lobbby owner
+          if (tempLobby?.players?.[playerIndex]?.isOwner) {
+            // find the index of the first connected non-owner player
+            let newOwnerIndex = tempLobby?.players?.findIndex(
+              (player) => player.connected && !player.isOwner
+            );
+            tempLobby.players[newOwnerIndex].isOwner = true;
+          }
+
+          if (r?.status === 'open' || r?.status === 'gameOver') {
+            // if the status of the lobby equals 'open' or 'gameOver' we remove the player on disconnect
+            tempLobby?.players?.splice?.(playerIndex, 1);
+          } else {
+            // if the game is active, we change their 'connected' to false
+            tempLobby.players[playerIndex].connected = false;
+
+            // we also check if the person who disconnected is the person drawing - in this case we end the round
+
+            // TODO DOING
+          }
+
+          lobbyRepository
+            .save(tempLobby)
+            .then((dcsr) => {
+              // emit the new lobby state as a 'lobbyUpdate' to all players in the lobby
+
+              socketIO.to(r?.name).emit('userStateChange', {
+                newUserState: dcsr.players,
+              });
+            })
+            .catch((dcserr) => {
+              console.log('save on disconnect error: ', dcserr);
+            });
+        }
       })
       .catch((err) => {
         console.log('liv eror: ', err);
       });
 
-    console.log('all rooms after dc: ', socketIO?.sockets?.adapter?.rooms);
+    // console.log('all rooms after dc: ', socketIO?.sockets?.adapter?.rooms);
   });
 });
 
