@@ -847,69 +847,75 @@ socketIO.on('connection', (socket) => {
       .contains(socket?.id)
       .returnFirst()
       .then((r) => {
+        console.log('to je leaval: ', r);
         let tempLobby = r;
         let playerIndex = tempLobby?.players?.findIndex(
           (player) => player?.socketId === socket?.id
         );
 
-        // check how many CONNECTED players remain in the lobbby - if the lobby is empty after the disconnect, delete it
-        let throwawayPlayers = [...r?.players];
-        throwawayPlayers?.splice?.(playerIndex, 1);
-        let stillConnected = throwawayPlayers?.filter?.(
-          (player) => player?.connected
-        )?.length;
-
-        if (stillConnected === 0) {
-          // delete the lobbby as there is no more connected players in it
-
-          lobbyRepository
-            .remove(r[EntityId])
-            .then(() => {
-              console.log('lobby deleted');
-            })
-            .catch((removeerr) => {
-              console.log('error deleting lobby: ', removeerr);
-            });
-        } else if (stillConnected === 1) {
-          // only only player remains - end the game because not enough active players left
-          // TODO gameover status with extra message about there not beeing enought players
-        } else {
-          // someone disconnected but the game goes on
-
-          // no matter the lobby status check if the user was the owner and change the lobbby owner
-          if (tempLobby?.players?.[playerIndex]?.isOwner) {
-            // find the index of the first connected non-owner player
-            let newOwnerIndex = tempLobby?.players?.findIndex(
-              (player) => player.connected && !player.isOwner
-            );
-            tempLobby.players[newOwnerIndex].isOwner = true;
-          }
-
-          if (r?.status === 'open' || r?.status === 'gameOver') {
-            // if the status of the lobby equals 'open' or 'gameOver' we remove the player on disconnect
-            tempLobby?.players?.splice?.(playerIndex, 1);
-          } else {
-            // if the game is active, we change their 'connected' to false
-            tempLobby.players[playerIndex].connected = false;
-
-            // we also check if the person who disconnected is the person drawing - in this case we end the round
-
-            // TODO DOING
-          }
-
-          lobbyRepository
-            .save(tempLobby)
-            .then((dcsr) => {
-              // emit the new lobby state as a 'lobbyUpdate' to all players in the lobby
-
-              socketIO.to(r?.name).emit('userStateChange', {
-                newUserState: dcsr.players,
-              });
-            })
-            .catch((dcserr) => {
-              console.log('save on disconnect error: ', dcserr);
-            });
+        // check if disconnecting player is owner and find a new owner
+        // and if there is more than 1 players find the index of the first connected non-owner player
+        if (
+          tempLobby?.players?.[playerIndex]?.isOwner &&
+          tempLobby?.players?.length > 1
+        ) {
+          let newOwnerIndex = tempLobby?.players?.findIndex(
+            (player) => player.connected && !player.isOwner
+          );
+          tempLobby.players[newOwnerIndex].isOwner = true;
         }
+
+        // depending on the game status remove or just change the connection status of the disconnecting player
+        if (r?.status === 'open' || r?.status === 'gameOver') {
+          // if the status of the lobby equals 'open' or 'gameOver' we remove the player on disconnect
+          tempLobby?.players?.splice?.(playerIndex, 1);
+        } else {
+          // if the game is active, we change their 'connected' to false
+          tempLobby.players[playerIndex].connected = false;
+
+          // we also check if the person who disconnected is the person drawing - in this case we end the round
+
+          // TODO HAS TO BE IMPLEMENTED!
+        }
+
+        lobbyRepository
+          .save(tempLobby)
+          .then((dcsr) => {
+            // check how many CONNECTED players remain in the lobbby - if the lobby is empty after the disconnect, delete it
+            let throwawayPlayers = [...dcsr?.players];
+            let stillConnected = throwawayPlayers?.filter?.(
+              (player) => player?.connected
+            )?.length;
+
+            if (stillConnected === 0) {
+              // delete the lobbby as there is no more connected players in it
+
+              lobbyRepository
+                .remove(r[EntityId])
+                .then(() => {
+                  console.log('lobby deleted');
+                })
+                .catch((removeerr) => {
+                  console.log('error deleting lobby: ', removeerr);
+                });
+            } else if (stillConnected === 1) {
+              // TODO
+              // only one player remains - end the game because not enough active players left
+              // gameover status with extra message about there not beeing enought players to keep the game going
+            } else {
+              // someone disconnected but the game goes on
+            }
+
+            // emit the new lobby state as a 'lobbyUpdate' to all players in the lobby
+            //
+            socketIO.to(r?.name).emit('userStateChange', {
+              newUserState: dcsr.players,
+            });
+            //
+          })
+          .catch((dcserr) => {
+            console.log('save on disconnect error: ', dcserr);
+          });
       })
       .catch((err) => {
         console.log('liv eror: ', err);
@@ -999,7 +1005,7 @@ app.post('/api/joinLobby', function (req, res) {
             );
             res.status(200).json({
               message: `You can reconnect ${lobbyName}`,
-              lobbyInfo: ourLobby,
+              lobbyInfo: lobbyWithLastKnown,
             });
             return;
           } else {
