@@ -153,7 +153,7 @@ const prepareNextRound = (tempLobby) => {
             50,
   }));
 
-  // find the drawer and award them point based the number of correct guesses
+  // find the drawer and award them points based the number of correct guesses
   let drawerIndexOnTheRoundScoreboard = roundScoreboard?.findIndex(
     (el) => el?.playerId === tempLobby?.gameState?.drawingUser
   );
@@ -179,11 +179,6 @@ const prepareNextRound = (tempLobby) => {
 
   let tempUnmaskedWord = tempLobby.gameState.wordToGuess;
   // determine who is drawing next
-
-  // find the index of the current drawer
-  let currentDrawerIndex = tempLobby?.players?.findIndex(
-    (player) => player?.playerId === tempLobby?.gameState?.drawingUser
-  );
 
   let socketIdForDrawingNext = null;
 
@@ -854,7 +849,7 @@ socketIO.on('connection', (socket) => {
         );
 
         // check if disconnecting player is owner and find a new owner
-        // and if there is more than 1 players find the index of the first connected non-owner player
+        // and if there is more than 1 player find the index of the first connected non-owner player
         if (
           tempLobby?.players?.[playerIndex]?.isOwner &&
           tempLobby?.players?.length > 1
@@ -862,8 +857,17 @@ socketIO.on('connection', (socket) => {
           let newOwnerIndex = tempLobby?.players?.findIndex(
             (player) => player.connected && !player.isOwner
           );
-          tempLobby.players[newOwnerIndex].isOwner = true;
+
+          if (newOwnerIndex !== -1) {
+            // there are still connected players that can become the owner
+            tempLobby.players[newOwnerIndex].isOwner = true;
+          }
         }
+
+        // we also check if the person who disconnected is the person drawing - in this case we end (abort) the round
+        const didDrawingUserDisconnect =
+          tempLobby?.players?.[playerIndex]?.playerid ===
+          tempLobby?.gameState?.drawingUser;
 
         // depending on the game status remove or just change the connection status of the disconnecting player
         if (r?.status === 'open' || r?.status === 'gameOver') {
@@ -872,10 +876,6 @@ socketIO.on('connection', (socket) => {
         } else {
           // if the game is active, we change their 'connected' to false
           tempLobby.players[playerIndex].connected = false;
-
-          // we also check if the person who disconnected is the person drawing - in this case we end the round
-
-          // TODO HAS TO BE IMPLEMENTED!
         }
 
         lobbyRepository
@@ -902,8 +902,15 @@ socketIO.on('connection', (socket) => {
               // TODO
               // only one player remains - end the game because not enough active players left
               // gameover status with extra message about there not beeing enought players to keep the game going
+
+              // TODO remove, temp for testing on local
+              prepareNextRound(tempLobby);
+              // temp for testing on local
             } else {
               // someone disconnected but the game goes on
+
+              // if the disconnected player was drawing, trigger prepareNextRound DOING
+              prepareNextRound(tempLobby);
             }
 
             // emit the new lobby state as a 'lobbyUpdate' to all players in the lobby
